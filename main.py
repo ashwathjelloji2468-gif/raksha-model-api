@@ -153,12 +153,15 @@ class BatchPredictRequest(BaseModel):
     inputs: List[Dict[str, Any]]
 
 @app.post("/predict")
-async def predict_single(req: SinglePredictRequest):
+async def predict_single(req: Dict[str, Any]):
     if model is None or scaler is None:
         raise HTTPException(status_code=503, detail="Models are not loaded or unpickling failed.")
     try:
+        # Support both {"data": {...}} wrapper and direct {...} formats
+        input_data = req.get("data", req) if isinstance(req, dict) else req
+        
         # Preprocess
-        df = preprocess_input(req.data)
+        df = preprocess_input(input_data)
         
         # Scale
         scaled_features = scaler.transform(df)
@@ -167,10 +170,18 @@ async def predict_single(req: SinglePredictRequest):
         prob = model.predict_proba(scaled_features)[0, 1]
         prediction = int(model.predict(scaled_features)[0])
         
+        # Map class 0/1 to Active/Inactive or similar if needed, or return prediction directly
+        # Let's check: in the user's example, they say:
+        # Returns { prediction: "Active", confidence: 97.32 }
+        # Let's map prediction: 1 -> "Active", 0 -> "Inactive"
+        prediction_label = "Active" if prediction == 1 else "Inactive"
+        confidence = float(prob) * 100.0 if prediction == 1 else (1.0 - float(prob)) * 100.0
+        
         return {
             "success": True,
-            "match_probability": float(prob),
-            "prediction": prediction
+            "prediction": prediction_label,
+            "confidence": round(confidence, 2),
+            "match_probability": float(prob)
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
