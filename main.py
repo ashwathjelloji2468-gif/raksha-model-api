@@ -1,12 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import os
 import joblib
-import pickle
 import pandas as pd
 import numpy as np
+import math
 
 app = FastAPI(title="RakshaAI Model API", description="FastAPI Server for XGBoost and StandardScaler models")
 
@@ -22,132 +22,33 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Global variables for models
-model = None
-scaler = None
+# Robust model loading
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+model_path = os.path.join(BASE_DIR, "model", "xgboost_raksha_tuned.pkl")
+scaler_path = os.path.join(BASE_DIR, "model", "scaler_raksha.pkl")
 
-# Feature names expected by the scaler (62 columns)
-FEATURE_COLUMNS = [
-    'role_status', 'bridge_status', 'latitude', 'longitude', 'quantity_required', 
-    'donations_till_date', 'cycle_of_donations', 'total_calls', 'frequency_in_days', 
-    'status_of_bridge', 'registration_date_days', 'last_contacted_date_days', 
-    'last_donation_date_days', 'last_transfusion_date_days', 'expected_next_transfusion_date_days', 
-    'next_eligible_date_days', 'last_bridge_donation_date_days', 
-    'role_Bridge Donor', 'role_Emergency Donor', 'role_Guest', 'role_Patient', 'role_Volunteer', 
-    'blood_group_A Negative', 'blood_group_A Positive', 'blood_group_A1 Positive', 
-    'blood_group_A1B Positive', 'blood_group_A2 Negative', 'blood_group_A2 Positive', 
-    'blood_group_A2B Negative', 'blood_group_A2B Positive', 'blood_group_AB Negative', 
-    'blood_group_AB Positive', 'blood_group_B Negative', 'blood_group_B Positive', 
-    'blood_group_Bombay Blood Group', 'blood_group_Do not Know', 'blood_group_O Negative', 
-    'blood_group_O Positive', 'blood_group_Unknown', 
-    'gender_Female', 'gender_Male', 'gender_Non-binary', 'gender_Other', 
-    'gender_Prefer not to say', 'gender_Unknown', 
-    'donor_type_One-Time Donor', 'donor_type_Other', 'donor_type_Regular Donor', 
-    'bridge_gender_Female', 'bridge_gender_Male', 'bridge_gender_Unknown', 
-    'bridge_blood_group_A Negative', 'bridge_blood_group_A Positive', 
-    'bridge_blood_group_AB Negative', 'bridge_blood_group_AB Positive', 
-    'bridge_blood_group_B Negative', 'bridge_blood_group_B Positive', 
-    'bridge_blood_group_O Negative', 'bridge_blood_group_O Positive', 
-    'bridge_blood_group_Unknown', 'eligibility_status_eligible', 
-    'eligibility_status_not eligible'
-]
+model = joblib.load(model_path)
+scaler = joblib.load(scaler_path)
 
-# Categorical mapping fields for automatic one-hot encoding helper
-CATEGORICAL_FIELDS = {
-    'role': ['Bridge Donor', 'Emergency Donor', 'Guest', 'Patient', 'Volunteer'],
-    'blood_group': [
-        'A Negative', 'A Positive', 'A1 Positive', 'A1B Positive', 'A2 Negative', 
-        'A2 Positive', 'A2B Negative', 'A2B Positive', 'AB Negative', 'AB Positive', 
-        'B Negative', 'B Positive', 'Bombay Blood Group', 'Do not Know', 'O Negative', 
-        'O Positive', 'Unknown'
-    ],
-    'gender': ['Female', 'Male', 'Non-binary', 'Other', 'Prefer not to say', 'Unknown'],
-    'donor_type': ['One-Time Donor', 'Other', 'Regular Donor'],
-    'bridge_gender': ['Female', 'Male', 'Unknown'],
-    'bridge_blood_group': [
-        'A Negative', 'A Positive', 'AB Negative', 'AB Positive', 'B Negative', 
-        'B Positive', 'O Negative', 'O Positive', 'Unknown'
-    ],
-    'eligibility_status': ['eligible', 'not eligible']
+# ── Blood compatibility tables ────────────────────────────────
+ABO_COMPAT = {
+    "O-":  ["O-","O+","A-","A+","B-","B+","AB-","AB+"],
+    "O+":  ["O+","A+","B+","AB+"],
+    "A-":  ["A-","A+","AB-","AB+"],
+    "A+":  ["A+","AB+"],
+    "B-":  ["B-","B+","AB-","AB+"],
+    "B+":  ["B+","AB+"],
+    "AB-": ["AB-","AB+"],
+    "AB+": ["AB+"],
 }
 
-@app.on_event("startup")
-def load_models():
-    global model, scaler
-    model_path = os.path.join(os.path.dirname(__file__), "model", "xgboost_raksha_tuned.pkl")
-    scaler_path = os.path.join(os.path.dirname(__file__), "model", "scaler_raksha.pkl")
-    
-    print("Loading models...")
-    # Load Scaler
-    try:
-        scaler = joblib.load(scaler_path)
-        print("Scaler loaded successfully via joblib.")
-    except Exception as e:
-        print(f"joblib load failed for scaler, trying pickle: {e}")
-        try:
-            with open(scaler_path, "rb") as f:
-                scaler = pickle.load(f)
-            print("Scaler loaded successfully via pickle.")
-        except Exception as ex:
-            print(f"Error loading scaler: {ex}")
-            
-    # Load XGBoost Model
-    try:
-        with open(model_path, "rb") as f:
-            model = pickle.load(f)
-        print("XGBoost model loaded successfully.")
-    except Exception as e:
-        print(f"Error loading XGBoost model: {e}")
-
-@app.get("/")
-async def root():
-    return {"status": "RakshaAI Model API is running"}
-
-def preprocess_input(raw_data: Dict[str, Any]) -> pd.DataFrame:
-    """
-    Transforms raw dictionary input containing numerical and categorical fields
-    into the exact 62-column format expected by the StandardScaler and XGBoost model.
-    """
-    # 1. Initialize all feature columns to 0.0 or default values
-    features = {col: 0.0 for col in FEATURE_COLUMNS}
-    
-    # 2. Extract numerical features (default to 0.0 if not provided)
-    numerical_cols = [
-        'role_status', 'bridge_status', 'latitude', 'longitude', 'quantity_required', 
-        'donations_till_date', 'cycle_of_donations', 'total_calls', 'frequency_in_days', 
-        'status_of_bridge', 'registration_date_days', 'last_contacted_date_days', 
-        'last_donation_date_days', 'last_transfusion_date_days', 'expected_next_transfusion_date_days', 
-        'next_eligible_date_days', 'last_bridge_donation_date_days'
-    ]
-    for col in numerical_cols:
-        features[col] = float(raw_data.get(col, 0.0))
-        
-    # 3. Apply categorical one-hot encoding
-    for field, categories in CATEGORICAL_FIELDS.items():
-        val = raw_data.get(field)
-        if val is not None:
-            # Match categorical value to standard names
-            val_str = str(val).strip()
-            # If the user sends shortcodes like "O+", convert to standard O Positive
-            if field in ['blood_group', 'bridge_blood_group']:
-                normalization = {
-                    "O+": "O Positive", "O-": "O Negative",
-                    "A+": "A Positive", "A-": "A Negative",
-                    "B+": "B Positive", "B-": "B Negative",
-                    "AB+": "AB Positive", "AB-": "AB Negative"
-                }
-                val_str = normalization.get(val_str, val_str)
-                
-            # One-hot encoding mapping
-            for cat in categories:
-                col_name = f"{field}_{cat}"
-                if col_name in features:
-                    features[col_name] = 1.0 if val_str.lower() == cat.lower() else 0.0
-                    
-    # 4. Create DataFrame and enforce column order matching FEATURE_COLUMNS
-    df = pd.DataFrame([features])
-    df = df[FEATURE_COLUMNS]
-    return df
+ANTIGEN_WEIGHT = {
+    "Kell":   0.20,
+    "Duffy":  0.15,
+    "Kidd":   0.15,
+    "MNS":    0.10,
+    "Lewis":  0.08,
+}
 
 class DonorData(BaseModel):
     cycle_of_donations: int
@@ -158,11 +59,105 @@ class DonorData(BaseModel):
     last_donation_date: str
     last_contacted_date: str
 
+class PatientQuery(BaseModel):
+    blood_group: str
+    rh_factor: str
+    antibody_history: List[str] = []
+    city: str
+    latitude: float
+    longitude: float
+    transfusion_count: int
+    last_transfusion_date: str
+    diagnosis: str
+
+class DonorRecord(BaseModel):
+    donor_id: str
+    blood_group: str
+    city: str
+    latitude: float
+    longitude: float
+    cycle_of_donations: float
+    donations_till_date: float
+    total_calls: float
+    frequency_in_days: float
+    registration_date: str
+    last_donation_date: str
+    last_contacted_date: str
+    has_conditions: bool = False
+    feedback_score: Optional[float] = 5.0
+    extended_antigens: Optional[List[str]] = []
+
+class MatchRequest(BaseModel):
+    patient: PatientQuery
+    donors: List[DonorRecord]
+
 class SinglePredictRequest(BaseModel):
     data: Dict[str, Any]
 
 class BatchPredictRequest(BaseModel):
     inputs: List[Dict[str, Any]]
+
+def haversine_km(lat1, lon1, lat2, lon2):
+    R = 6371
+    phi1, phi2 = math.radians(lat1), math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlam = math.radians(lon2 - lon1)
+    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlam/2)**2
+    return round(R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a)), 1)
+
+def activity_score(donor: DonorRecord) -> float:
+    ref = pd.Timestamp.today()
+    row = {
+        "cycle_of_donations":  donor.cycle_of_donations,
+        "donations_till_date": donor.donations_till_date,
+        "total_calls":         donor.total_calls,
+        "frequency_in_days":   donor.frequency_in_days,
+    }
+    for col, val in [
+        ("registration_date",   donor.registration_date),
+        ("last_donation_date",  donor.last_donation_date),
+        ("last_contacted_date", donor.last_contacted_date),
+    ]:
+        dt = pd.to_datetime(val, errors="coerce")
+        row[col + "_days"] = (ref - dt).days if pd.notna(dt) else 999
+
+    df = pd.DataFrame([row])
+    df = df.reindex(columns=scaler.feature_names_in_, fill_value=0)
+    prob = float(model.predict_proba(scaler.transform(df))[0][1])
+    return round(prob * 100, 2)
+
+def antigen_score(patient_antibodies: List[str],
+                  donor_antigens:    List[str]) -> float:
+    if not patient_antibodies:
+        return 100.0
+    risk = 0.0
+    for ab in patient_antibodies:
+        if ab in donor_antigens:
+            risk += ANTIGEN_WEIGHT.get(ab, 0.05)
+    return round(max(0, (1 - risk) * 100), 1)
+
+def recency_score(last_donation_date: str) -> float:
+    try:
+        days = (pd.Timestamp.today() -
+                pd.to_datetime(last_donation_date)).days
+    except Exception:
+        days = 999
+    return round(max(0, min(100, (1 - days / 365) * 100)), 1)
+
+def distance_score(dist_km: float) -> float:
+    if dist_km <= 5:   return 100.0
+    if dist_km <= 10:  return 85.0
+    if dist_km <= 20:  return 65.0
+    if dist_km <= 50:  return 40.0
+    return max(0, round(100 - dist_km * 0.8, 1))
+
+def feedback_score(score: Optional[float]) -> float:
+    if score is None: return 70.0
+    return round((score / 5.0) * 100, 1)
+
+@app.get("/")
+async def root():
+    return {"status": "RakshaAI Model API is running"}
 
 @app.post("/predict")
 def predict(donor: DonorData):
@@ -241,15 +236,27 @@ def predict(donor: DonorData):
 
 @app.post("/predict/batch")
 async def predict_batch(req: BatchPredictRequest):
-    if model is None or scaler is None:
-        raise HTTPException(status_code=503, detail="Models are not loaded or unpickling failed.")
     try:
         probabilities = []
         predictions = []
         
         for item in req.inputs:
-            df = preprocess_input(item)
+            # Reindex to match trained features (similar logic to predict_single)
+            df = pd.DataFrame([item])
+            
+            # Simple preprocess for batch
+            reference_date = pd.Timestamp.today()
+            date_cols = ['registration_date', 'last_donation_date', 'last_contacted_date']
+            for col in date_cols:
+                if col in df.columns:
+                    df[col] = pd.to_datetime(df[col], errors='coerce')
+                    df[col + '_days'] = (reference_date - df[col]).dt.days
+                    df.drop(columns=[col], inplace=True)
+            
+            trained_columns = scaler.feature_names_in_
+            df = df.reindex(columns=trained_columns, fill_value=0)
             scaled_features = scaler.transform(df)
+            
             prob = model.predict_proba(scaled_features)[0, 1]
             pred = int(model.predict(scaled_features)[0])
             probabilities.append(float(prob))
@@ -262,6 +269,92 @@ async def predict_batch(req: BatchPredictRequest):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Batch prediction failed: {str(e)}")
+
+@app.post("/match")
+def match_donors(req: MatchRequest):
+    patient   = req.patient
+    results   = []
+
+    for donor in req.donors:
+
+        # ── Hard filter 1: ABO compatibility ──
+        compatible_recipients = ABO_COMPAT.get(donor.blood_group, [])
+        if patient.blood_group not in compatible_recipients:
+            continue
+
+        # ── Hard filter 2: Medical conditions ──
+        if donor.has_conditions:
+            continue
+
+        # ── Compute distance ──
+        dist_km = haversine_km(
+            patient.latitude, patient.longitude,
+            donor.latitude,   donor.longitude
+        )
+
+        # ── Score each dimension ──
+        s_activity  = activity_score(donor)
+        s_antigen   = antigen_score(patient.antibody_history,
+                                    donor.extended_antigens or [])
+        s_recency   = recency_score(donor.last_donation_date)
+        s_distance  = distance_score(dist_km)
+        s_feedback  = feedback_score(donor.feedback_score)
+
+        # ── Weighted composite score ──
+        composite = round(
+            s_activity  * 0.30 +
+            s_antigen   * 0.25 +
+            s_recency   * 0.20 +
+            s_distance  * 0.15 +
+            s_feedback  * 0.10,
+        2)
+
+        results.append({
+            "donor_id":        donor.donor_id,
+            "blood_group":     donor.blood_group,
+            "city":            donor.city,
+            "distance_km":     dist_km,
+            "composite_score": composite,
+            "breakdown": {
+                "activity_score":  {
+                    "score": s_activity,
+                    "weight": "30%",
+                    "detail": "XGBoost model — likelihood of active donation"
+                },
+                "antigen_score":   {
+                    "score": s_antigen,
+                    "weight": "25%",
+                    "detail": "Extended antigen compatibility vs patient antibodies"
+                },
+                "recency_score":   {
+                    "score": s_recency,
+                    "weight": "20%",
+                    "detail": f"Last donated {donor.last_donation_date}"
+                },
+                "distance_score":  {
+                    "score": s_distance,
+                    "weight": "15%",
+                    "detail": f"{dist_km} km from patient"
+                },
+                "feedback_score":  {
+                    "score": s_feedback,
+                    "weight": "10%",
+                    "detail": f"Platform rating: {donor.feedback_score}/5"
+                },
+            },
+            "alloimmunization_risk": "Low" if s_antigen > 80 else
+                                     "Moderate" if s_antigen > 50 else "High",
+        })
+
+    results.sort(key=lambda x: x["composite_score"], reverse=True)
+
+    return {
+        "success":       True,
+        "patient_query": patient.blood_group,
+        "total_matched": len(results),
+        "top_matches":   results[:5],
+        "evaluated_at":  pd.Timestamp.today().strftime("%Y-%m-%d %H:%M:%S"),
+    }
 
 if __name__ == "__main__":
     import uvicorn
