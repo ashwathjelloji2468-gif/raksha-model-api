@@ -1,36 +1,52 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Any, Optional
-import os
-import joblib
+from typing import List, Optional
 import pandas as pd
 import numpy as np
-import math
+import math, joblib
 
-app = FastAPI(title="RakshaAI Model API", description="FastAPI Server for XGBoost and StandardScaler models")
+app = FastAPI()
 
-# Add CORS Middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "https://frontend-phi-seven-18.vercel.app",
-        "http://localhost:3000"
-    ],
-    allow_credentials=False,
+    allow_origins=["*"],
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*"]
 )
 
-# Robust model loading
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-model_path = os.path.join(BASE_DIR, "model", "xgboost_raksha_tuned.pkl")
-scaler_path = os.path.join(BASE_DIR, "model", "scaler_raksha.pkl")
+model  = joblib.load('model/xgboost_raksha_tuned.pkl')
+scaler = joblib.load('model/scaler_raksha.pkl')
 
-model = joblib.load(model_path)
-scaler = joblib.load(scaler_path)
+# ── City coordinates (India) ──────────────────────────────────
+CITY_COORDS = {
+    "hyderabad":     (17.3850, 78.4867),
+    "secunderabad":  (17.4399, 78.4983),
+    "warangal":      (17.9784, 79.5941),
+    "mumbai":        (19.0760, 72.8777),
+    "pune":          (18.5204, 73.8567),
+    "bangalore":     (12.9716, 77.5946),
+    "bengaluru":     (12.9716, 77.5946),
+    "chennai":       (13.0827, 80.2707),
+    "delhi":         (28.7041, 77.1025),
+    "kolkata":       (22.5726, 88.3639),
+    "ahmedabad":     (23.0225, 72.5714),
+    "jaipur":        (26.9124, 75.7873),
+    "lucknow":       (26.8467, 80.9462),
+    "nagpur":        (21.1458, 79.0882),
+    "visakhapatnam": (17.6868, 83.2185),
+    "vijayawada":    (16.5062, 80.6480),
+    "karimnagar":    (18.4386, 79.1288),
+    "nizamabad":     (18.6725, 78.0941),
+}
 
-# ── Blood compatibility tables ────────────────────────────────
+def get_coords(city: str, lat: float, lon: float):
+    if lat and lon and lat != 0 and lon != 0:
+        return lat, lon
+    key = city.lower().strip() if city else ""
+    return CITY_COORDS.get(key, (17.3850, 78.4867))
+
+# ── Blood compatibility ───────────────────────────────────────
 ABO_COMPAT = {
     "O-":  ["O-","O+","A-","A+","B-","B+","AB-","AB+"],
     "O+":  ["O+","A+","B+","AB+"],
@@ -42,70 +58,76 @@ ABO_COMPAT = {
     "AB+": ["AB+"],
 }
 
-ANTIGEN_WEIGHT = {
-    "Kell":   0.20,
+ANTIGEN_RISK_WEIGHT = {
+    "Kell":   0.30,
+    "Anti-D": 0.25,
+    "Anti-E": 0.20,
+    "Anti-C": 0.20,
     "Duffy":  0.15,
     "Kidd":   0.15,
     "MNS":    0.10,
     "Lewis":  0.08,
 }
 
-class DonorData(BaseModel):
-    cycle_of_donations: int
-    donations_till_date: int
-    total_calls: int
-    frequency_in_days: int
-    registration_date: str
-    last_donation_date: str
-    last_contacted_date: str
-
 class PatientQuery(BaseModel):
-    blood_group: str
-    rh_factor: str
-    antibody_history: List[str] = []
-    city: str
-    latitude: float
-    longitude: float
-    transfusion_count: int
-    last_transfusion_date: str
-    diagnosis: str
+    blood_group:           str
+    rh_factor:             str = ""
+    antibody_history:      List[str] = []
+    city:                  str = ""
+    latitude:              float = 0
+    longitude:             float = 0
+    transfusion_count:     int = 0
+    last_transfusion_date: str = ""
+    diagnosis:             str = "Thalassemia"
 
 class DonorRecord(BaseModel):
-    donor_id: str
-    blood_group: str
-    city: str
-    latitude: float
-    longitude: float
-    cycle_of_donations: float
-    donations_till_date: float
-    total_calls: float
-    frequency_in_days: float
-    registration_date: str
-    last_donation_date: str
-    last_contacted_date: str
-    has_conditions: bool = False
-    feedback_score: Optional[float] = 5.0
-    extended_antigens: Optional[List[str]] = []
+    donor_id:            str
+    donor_name:          str = ""
+    blood_group:         str
+    city:                str = ""
+    latitude:            float = 0
+    longitude:           float = 0
+    cycle_of_donations:  float = 0
+    donations_till_date: float = 0
+    total_calls:         float = 0
+    frequency_in_days:   float = 90
+    registration_date:   str = "2023-01-01"
+    last_donation_date:  str = "2024-01-01"
+    last_contacted_date: str = "2024-01-01"
+    has_conditions:      bool = False
+    feedback_score:      Optional[float] = 5.0
+    extended_antigens:   Optional[List[str]] = []
+
+class DonorOnly(BaseModel):
+    donor_id:            str
+    blood_group:         str
+    city:                str = ""
+    latitude:            float = 0
+    longitude:           float = 0
+    cycle_of_donations:  float = 0
+    donations_till_date: float = 0
+    total_calls:         float = 0
+    frequency_in_days:   float = 90
+    registration_date:   str = "2023-01-01"
+    last_donation_date:  str = "2024-01-01"
+    last_contacted_date: str = "2024-01-01"
+    has_conditions:      bool = False
+    feedback_score:      Optional[float] = 5.0
 
 class MatchRequest(BaseModel):
     patient: PatientQuery
-    donors: List[DonorRecord]
-
-class SinglePredictRequest(BaseModel):
-    data: Dict[str, Any]
-
-class BatchPredictRequest(BaseModel):
-    inputs: List[Dict[str, Any]]
+    donors:  List[DonorRecord]
 
 def haversine_km(lat1, lon1, lat2, lon2):
     R = 6371
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
     dphi = math.radians(lat2 - lat1)
     dlam = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1)*math.cos(phi2)*math.sin(dlam/2)**2
+    a = (math.sin(dphi/2)**2 +
+         math.cos(phi1)*math.cos(phi2)*math.sin(dlam/2)**2)
     return round(R * 2 * math.atan2(math.sqrt(a), math.sqrt(1-a)), 1)
 
-def activity_score(donor: DonorRecord) -> float:
+def compute_activity_score(donor: DonorRecord) -> tuple:
     ref = pd.Timestamp.today()
     row = {
         "cycle_of_donations":  donor.cycle_of_donations,
@@ -118,244 +140,235 @@ def activity_score(donor: DonorRecord) -> float:
         ("last_donation_date",  donor.last_donation_date),
         ("last_contacted_date", donor.last_contacted_date),
     ]:
-        dt = pd.to_datetime(val, errors="coerce")
-        row[col + "_days"] = (ref - dt).days if pd.notna(dt) else 999
-
+        try:
+            dt = pd.to_datetime(val, errors="coerce")
+            row[col + "_days"] = int((ref - dt).days) if pd.notna(dt) else 999
+        except:
+            row[col + "_days"] = 999
     df = pd.DataFrame([row])
     df = df.reindex(columns=scaler.feature_names_in_, fill_value=0)
     prob = float(model.predict_proba(scaler.transform(df))[0][1])
-    return round(prob * 100, 2)
+    label = "Active" if prob >= 0.5 else "Inactive"
+    return round(prob * 100, 1), label
 
-def antigen_score(patient_antibodies: List[str],
-                  donor_antigens:    List[str]) -> float:
-    if not patient_antibodies:
-        return 100.0
-    risk = 0.0
-    for ab in patient_antibodies:
-        if ab in donor_antigens:
-            risk += ANTIGEN_WEIGHT.get(ab, 0.05)
-    return round(max(0, (1 - risk) * 100), 1)
+def compute_antigen_score(patient_abs: List[str],
+                           donor_antigens: List[str]) -> tuple:
+    if not patient_abs:
+        return 100.0, "None detected", "Low"
+    risk_total = 0.0
+    conflicts  = []
+    for ab in patient_abs:
+        if ab in (donor_antigens or []):
+            w = ANTIGEN_RISK_WEIGHT.get(ab, 0.05)
+            risk_total += w
+            conflicts.append(ab)
+    score = round(max(0, (1 - min(risk_total, 1)) * 100), 1)
+    if score >= 85:
+        risk_level = "Low"
+    elif score >= 60:
+        risk_level = "Moderate"
+    else:
+        risk_level = "High"
+    detail = ("No antibody conflicts" if not conflicts
+              else f"Conflicts: {', '.join(conflicts)}")
+    return score, detail, risk_level
 
-def recency_score(last_donation_date: str) -> float:
+def compute_recency_score(last_donation_date: str) -> tuple:
     try:
         days = (pd.Timestamp.today() -
                 pd.to_datetime(last_donation_date)).days
-    except Exception:
+    except:
         days = 999
-    return round(max(0, min(100, (1 - days / 365) * 100)), 1)
+    score = round(max(0, min(100, (1 - days / 365) * 100)), 1)
+    if days < 30:
+        detail = f"Donated {days} days ago"
+    elif days < 90:
+        detail = f"Donated ~{days // 30} months ago"
+    else:
+        detail = f"Last donation {days} days ago"
+    return score, detail
 
-def distance_score(dist_km: float) -> float:
-    if dist_km <= 5:   return 100.0
-    if dist_km <= 10:  return 85.0
-    if dist_km <= 20:  return 65.0
-    if dist_km <= 50:  return 40.0
-    return max(0, round(100 - dist_km * 0.8, 1))
+def compute_distance_score(dist_km: float) -> tuple:
+    if dist_km <= 5:
+        return 100.0, f"{dist_km} km — same area"
+    elif dist_km <= 10:
+        return 85.0,  f"{dist_km} km — nearby"
+    elif dist_km <= 20:
+        return 65.0,  f"{dist_km} km — same city"
+    elif dist_km <= 50:
+        return 40.0,  f"{dist_km} km — short drive"
+    else:
+        s = round(max(0, 100 - dist_km * 0.8), 1)
+        return s, f"{dist_km} km — distant"
 
-def feedback_score(score: Optional[float]) -> float:
-    if score is None: return 70.0
-    return round((score / 5.0) * 100, 1)
+def compute_feedback_score(score: Optional[float]) -> tuple:
+    if score is None:
+        return 70.0, "No ratings yet"
+    s = round((score / 5.0) * 100, 1)
+    stars = "★" * int(score) + "☆" * (5 - int(score))
+    return s, f"{stars} ({score}/5 platform rating)"
 
 @app.get("/")
-async def root():
+def root():
     return {"status": "RakshaAI Model API is running"}
 
 @app.post("/predict")
-def predict(donor: DonorData):
-    donor_dict = donor.dict()
-    df_input = pd.DataFrame([donor_dict])
+def predict(donor: DonorOnly):
+    row = {
+        "cycle_of_donations":  donor.cycle_of_donations,
+        "donations_till_date": donor.donations_till_date,
+        "total_calls":         donor.total_calls,
+        "frequency_in_days":   donor.frequency_in_days,
+    }
+    ref = pd.Timestamp.today()
+    for col, val in [
+        ("registration_date",   donor.registration_date),
+        ("last_donation_date",  donor.last_donation_date),
+        ("last_contacted_date", donor.last_contacted_date),
+    ]:
+        try:
+            dt  = pd.to_datetime(val, errors="coerce")
+            row[col + "_days"] = int((ref - dt).days) if pd.notna(dt) else 999
+        except:
+            row[col + "_days"] = 999
 
-    # Convert dates to days
-    reference_date = pd.Timestamp.today()
-    date_cols = ['registration_date', 'last_donation_date', 'last_contacted_date']
-    for col in date_cols:
-        df_input[col] = pd.to_datetime(df_input[col], errors='coerce')
-        df_input[col + '_days'] = (reference_date - df_input[col]).dt.days
-        df_input.drop(columns=[col], inplace=True)
+    df   = pd.DataFrame([row])
+    df   = df.reindex(columns=scaler.feature_names_in_, fill_value=0)
+    prob = float(model.predict_proba(scaler.transform(df))[0][1])
+    conf = round(prob * 100, 2)
+    label = "Active" if prob >= 0.5 else "Inactive"
 
-    trained_columns = scaler.feature_names_in_
-    df_input = df_input.reindex(columns=trained_columns, fill_value=0)
-    scaled_input = scaler.transform(df_input)
-
-    label_encoded = int(model.predict(scaled_input)[0])
-    probability = float(model.predict_proba(scaled_input)[0][1])
-    label = 'Active' if label_encoded == 1 else 'Inactive'
-    confidence = round(probability * 100, 2)
-
-    # ── Real factor scores derived from actual input values ──
-    days_since_last_donation = float(df_input.get(
-        'last_donation_date_days', pd.Series([999])
-    ).iloc[0])
-    days_since_contacted = float(df_input.get(
-        'last_contacted_date_days', pd.Series([999])
-    ).iloc[0])
-    days_registered = float(df_input.get(
-        'registration_date_days', pd.Series([0])
-    ).iloc[0])
-
-    # Recency score: donated within 90 days = 100%, 180 days = 50%, 365+ = 0%
-    recency_score = round(max(0, min(100, (1 - days_since_last_donation / 365) * 100)), 1)
-
-    # Engagement score: contacted recently = higher score
-    engagement_score = round(max(0, min(100, (1 - days_since_contacted / 180) * 100)), 1)
-
-    # Loyalty score: how long registered, capped at 3 years
-    loyalty_score = round(min(100, (days_registered / 1095) * 100), 1)
-
-    # Donation frequency score based on cycle count
-    cycle_score = round(min(100, (donor.cycle_of_donations / 10) * 100), 1)
+    days_since_donation  = row.get("last_donation_date_days",  999)
+    days_since_contact   = row.get("last_contacted_date_days", 999)
+    days_registered      = row.get("registration_date_days",   0)
 
     return {
-        "success": True,
-        "prediction": label,
-        "confidence": confidence,
-        "match_probability": probability,
-        "evaluated_at": pd.Timestamp.today().strftime("%Y-%m-%d %H:%M:%S"),
+        "success":          True,
+        "prediction":       label,
+        "confidence":       conf,
+        "match_probability": prob,
+        "evaluated_at":     ref.strftime("%Y-%m-%d %H:%M:%S"),
         "factors": {
             "recency": {
-                "label": "Last donation",
-                "score": recency_score,
-                "detail": f"{int(days_since_last_donation)} days ago"
+                "label":  "Last donation",
+                "score":  round(max(0, min(100, (1-days_since_donation/365)*100)), 1),
+                "detail": f"{days_since_donation} days ago"
             },
             "engagement": {
-                "label": "Last contacted",
-                "score": engagement_score,
-                "detail": f"{int(days_since_contacted)} days ago"
+                "label":  "Last contacted",
+                "score":  round(max(0, min(100, (1-days_since_contact/180)*100)), 1),
+                "detail": f"{days_since_contact} days ago"
             },
             "loyalty": {
-                "label": "Time registered",
-                "score": loyalty_score,
-                "detail": f"{int(days_registered // 30)} months"
+                "label":  "Time registered",
+                "score":  round(min(100, (days_registered/1095)*100), 1),
+                "detail": f"{days_registered // 30} months on platform"
             },
             "cycle": {
-                "label": "Donation cycles",
-                "score": cycle_score,
-                "detail": f"{donor.cycle_of_donations} cycles completed"
-            }
+                "label":  "Donation cycles",
+                "score":  round(min(100, (donor.cycle_of_donations/10)*100), 1),
+                "detail": f"{int(donor.cycle_of_donations)} cycles completed"
+            },
         }
     }
 
-@app.post("/predict/batch")
-async def predict_batch(req: BatchPredictRequest):
-    try:
-        probabilities = []
-        predictions = []
-        
-        for item in req.inputs:
-            # Reindex to match trained features (similar logic to predict_single)
-            df = pd.DataFrame([item])
-            
-            # Simple preprocess for batch
-            reference_date = pd.Timestamp.today()
-            date_cols = ['registration_date', 'last_donation_date', 'last_contacted_date']
-            for col in date_cols:
-                if col in df.columns:
-                    df[col] = pd.to_datetime(df[col], errors='coerce')
-                    df[col + '_days'] = (reference_date - df[col]).dt.days
-                    df.drop(columns=[col], inplace=True)
-            
-            trained_columns = scaler.feature_names_in_
-            df = df.reindex(columns=trained_columns, fill_value=0)
-            scaled_features = scaler.transform(df)
-            
-            prob = model.predict_proba(scaled_features)[0, 1]
-            pred = int(model.predict(scaled_features)[0])
-            probabilities.append(float(prob))
-            predictions.append(pred)
-            
-        return {
-            "success": True,
-            "probabilities": probabilities,
-            "predictions": predictions
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Batch prediction failed: {str(e)}")
-
 @app.post("/match")
 def match_donors(req: MatchRequest):
-    patient   = req.patient
-    results   = []
+    patient  = req.patient
+    p_lat, p_lon = get_coords(patient.city,
+                               patient.latitude,
+                               patient.longitude)
+    results  = []
+    excluded = {"abo_fail": 0, "conditions": 0, "inactive": 0}
 
     for donor in req.donors:
-
-        # ── Hard filter 1: ABO compatibility ──
-        compatible_recipients = ABO_COMPAT.get(donor.blood_group, [])
-        if patient.blood_group not in compatible_recipients:
+        # Hard filter 1: ABO compatibility
+        compatible = ABO_COMPAT.get(donor.blood_group, [])
+        if patient.blood_group not in compatible:
+            excluded["abo_fail"] += 1
             continue
 
-        # ── Hard filter 2: Medical conditions ──
+        # Hard filter 2: Medical conditions
         if donor.has_conditions:
+            excluded["conditions"] += 1
             continue
 
-        # ── Compute distance ──
-        dist_km = haversine_km(
-            patient.latitude, patient.longitude,
-            donor.latitude,   donor.longitude
-        )
+        # Real coordinates
+        d_lat, d_lon = get_coords(donor.city,
+                                   donor.latitude,
+                                   donor.longitude)
+        dist_km = haversine_km(p_lat, p_lon, d_lat, d_lon)
 
-        # ── Score each dimension ──
-        s_activity  = activity_score(donor)
-        s_antigen   = antigen_score(patient.antibody_history,
-                                    donor.extended_antigens or [])
-        s_recency   = recency_score(donor.last_donation_date)
-        s_distance  = distance_score(dist_km)
-        s_feedback  = feedback_score(donor.feedback_score)
+        # All scores computed from real data
+        s_activity, activity_label = compute_activity_score(donor)
+        s_antigen,  antigen_detail, allo_risk = compute_antigen_score(
+            patient.antibody_history, donor.extended_antigens or [])
+        s_recency,  recency_detail  = compute_recency_score(donor.last_donation_date)
+        s_distance, distance_detail = compute_distance_score(dist_km)
+        s_feedback, feedback_detail = compute_feedback_score(donor.feedback_score)
 
-        # ── Weighted composite score ──
+        # Filter inactive donors
+        if s_activity < 50:
+            excluded["inactive"] += 1
+            continue
+
+        # Weighted composite
         composite = round(
             s_activity  * 0.30 +
             s_antigen   * 0.25 +
             s_recency   * 0.20 +
             s_distance  * 0.15 +
-            s_feedback  * 0.10,
-        2)
+            s_feedback  * 0.10, 1)
 
         results.append({
-            "donor_id":        donor.donor_id,
-            "blood_group":     donor.blood_group,
-            "city":            donor.city,
-            "distance_km":     dist_km,
+            "donor_id":    donor.donor_id,
+            "donor_name":  donor.donor_name,
+            "blood_group": donor.blood_group,
+            "city":        donor.city,
+            "distance_km": dist_km,
             "composite_score": composite,
+            "activity_label":  activity_label,
+            "alloimmunization_risk": allo_risk,
             "breakdown": {
-                "activity_score":  {
-                    "score": s_activity,
+                "XGBoost activity": {
+                    "score":  s_activity,
                     "weight": "30%",
-                    "detail": "XGBoost model — likelihood of active donation"
+                    "detail": f"Model prediction: {activity_label}"
                 },
-                "antigen_score":   {
-                    "score": s_antigen,
+                "Antigen compatibility": {
+                    "score":  s_antigen,
                     "weight": "25%",
-                    "detail": "Extended antigen compatibility vs patient antibodies"
+                    "detail": antigen_detail
                 },
-                "recency_score":   {
-                    "score": s_recency,
+                "Donation recency": {
+                    "score":  s_recency,
                     "weight": "20%",
-                    "detail": f"Last donated {donor.last_donation_date}"
+                    "detail": recency_detail
                 },
-                "distance_score":  {
-                    "score": s_distance,
+                "Proximity": {
+                    "score":  s_distance,
                     "weight": "15%",
-                    "detail": f"{dist_km} km from patient"
+                    "detail": distance_detail
                 },
-                "feedback_score":  {
-                    "score": s_feedback,
+                "Platform feedback": {
+                    "score":  s_feedback,
                     "weight": "10%",
-                    "detail": f"Platform rating: {donor.feedback_score}/5"
+                    "detail": feedback_detail
                 },
-            },
-            "alloimmunization_risk": "Low" if s_antigen > 80 else
-                                     "Moderate" if s_antigen > 50 else "High",
+            }
         })
 
     results.sort(key=lambda x: x["composite_score"], reverse=True)
 
     return {
-        "success":       True,
-        "patient_query": patient.blood_group,
-        "total_matched": len(results),
-        "top_matches":   results[:5],
-        "evaluated_at":  pd.Timestamp.today().strftime("%Y-%m-%d %H:%M:%S"),
+        "success":             True,
+        "patient_blood_group": patient.blood_group,
+        "patient_city":        patient.city,
+        "total_scanned":       len(req.donors),
+        "total_matched":       len(results),
+        "excluded_abo":        excluded["abo_fail"],
+        "excluded_conditions": excluded["conditions"],
+        "excluded_inactive":   excluded["inactive"],
+        "top_matches":         results,
+        "evaluated_at":        pd.Timestamp.today().strftime("%d %b %Y · %I:%M %p IST"),
     }
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
