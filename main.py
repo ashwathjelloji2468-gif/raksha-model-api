@@ -149,6 +149,15 @@ def preprocess_input(raw_data: Dict[str, Any]) -> pd.DataFrame:
     df = df[FEATURE_COLUMNS]
     return df
 
+class DonorData(BaseModel):
+    cycle_of_donations: int
+    donations_till_date: int
+    total_calls: int
+    frequency_in_days: int
+    registration_date: str
+    last_donation_date: str
+    last_contacted_date: str
+
 class SinglePredictRequest(BaseModel):
     data: Dict[str, Any]
 
@@ -156,38 +165,79 @@ class BatchPredictRequest(BaseModel):
     inputs: List[Dict[str, Any]]
 
 @app.post("/predict")
-async def predict_single(req: Dict[str, Any]):
-    if model is None or scaler is None:
-        raise HTTPException(status_code=503, detail="Models are not loaded or unpickling failed.")
-    try:
-        # Support both {"data": {...}} wrapper and direct {...} formats
-        input_data = req.get("data", req) if isinstance(req, dict) else req
-        
-        # Preprocess
-        df = preprocess_input(input_data)
-        
-        # Scale
-        scaled_features = scaler.transform(df)
-        
-        # Predict probability of positive match/acceptance class (class 1)
-        prob = model.predict_proba(scaled_features)[0, 1]
-        prediction = int(model.predict(scaled_features)[0])
-        
-        # Map class 0/1 to Active/Inactive or similar if needed, or return prediction directly
-        # Let's check: in the user's example, they say:
-        # Returns { prediction: "Active", confidence: 97.32 }
-        # Let's map prediction: 1 -> "Active", 0 -> "Inactive"
-        prediction_label = "Active" if prediction == 1 else "Inactive"
-        confidence = float(prob) * 100.0 if prediction == 1 else (1.0 - float(prob)) * 100.0
-        
-        return {
-            "success": True,
-            "prediction": prediction_label,
-            "confidence": round(confidence, 2),
-            "match_probability": float(prob)
+def predict(donor: DonorData):
+    donor_dict = donor.dict()
+    df_input = pd.DataFrame([donor_dict])
+
+    # Convert dates to days
+    reference_date = pd.Timestamp.today()
+    date_cols = ['registration_date', 'last_donation_date', 'last_contacted_date']
+    for col in date_cols:
+        df_input[col] = pd.to_datetime(df_input[col], errors='coerce')
+        df_input[col + '_days'] = (reference_date - df_input[col]).dt.days
+        df_input.drop(columns=[col], inplace=True)
+
+    trained_columns = scaler.feature_names_in_
+    df_input = df_input.reindex(columns=trained_columns, fill_value=0)
+    scaled_input = scaler.transform(df_input)
+
+    label_encoded = int(model.predict(scaled_input)[0])
+    probability = float(model.predict_proba(scaled_input)[0][1])
+    label = 'Active' if label_encoded == 1 else 'Inactive'
+    confidence = round(probability * 100, 2)
+
+    # ── Real factor scores derived from actual input values ──
+    days_since_last_donation = float(df_input.get(
+        'last_donation_date_days', pd.Series([999])
+    ).iloc[0])
+    days_since_contacted = float(df_input.get(
+        'last_contacted_date_days', pd.Series([999])
+    ).iloc[0])
+    days_registered = float(df_input.get(
+        'registration_date_days', pd.Series([0])
+    ).iloc[0])
+
+    # Recency score: donated within 90 days = 100%, 180 days = 50%, 365+ = 0%
+    recency_score = round(max(0, min(100, (1 - days_since_last_donation / 365) * 100)), 1)
+
+    # Engagement score: contacted recently = higher score
+    engagement_score = round(max(0, min(100, (1 - days_since_contacted / 180) * 100)), 1)
+
+    # Loyalty score: how long registered, capped at 3 years
+    loyalty_score = round(min(100, (days_registered / 1095) * 100), 1)
+
+    # Donation frequency score based on cycle count
+    cycle_score = round(min(100, (donor.cycle_of_donations / 10) * 100), 1)
+
+    return {
+        "success": True,
+        "prediction": label,
+        "confidence": confidence,
+        "match_probability": probability,
+        "evaluated_at": pd.Timestamp.today().strftime("%Y-%m-%d %H:%M:%S"),
+        "factors": {
+            "recency": {
+                "label": "Last donation",
+                "score": recency_score,
+                "detail": f"{int(days_since_last_donation)} days ago"
+            },
+            "engagement": {
+                "label": "Last contacted",
+                "score": engagement_score,
+                "detail": f"{int(days_since_contacted)} days ago"
+            },
+            "loyalty": {
+                "label": "Time registered",
+                "score": loyalty_score,
+                "detail": f"{int(days_registered // 30)} months"
+            },
+            "cycle": {
+                "label": "Donation cycles",
+                "score": cycle_score,
+                "detail": f"{donor.cycle_of_donations} cycles completed"
+            }
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
+    }
 
 @app.post("/predict/batch")
 async def predict_batch(req: BatchPredictRequest):
